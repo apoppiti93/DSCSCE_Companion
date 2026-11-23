@@ -1,3 +1,5 @@
+import json
+import pandas as pd
 import streamlit as st
 from utils.loader import load_workbook_data, load_progress, save_progress
 
@@ -18,16 +20,16 @@ st.caption("Powered by DSCSCE.xlsx • Interactive Dex, Evolution Paths & Progre
 # Top summary row from loaded workbook
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Digimon (Field Guide)", len(dex))
-c2.metric("HM Digivolution Links", len(digi_hm))
-c3.metric("Medals (HM / Total)", len(data["Medals"]))
+c2.metric("Digivolution Links", len(digi_hm))
+c3.metric("Medals (Total)", len(data["Medals"]))
 c4.metric("Cases", len(data["Cases"]))
 c5.metric("Areas", len(data["Area"]))
 
 st.divider()
 
-# Sidebar global filters
+# Sidebar global filters & progress backup
 st.sidebar.header("Dex Filters")
-search_q = st.sidebar.text_input("Search Name", placeholder="e.g., Omnimon, Alphamon, Kuramon")
+search_q = st.sidebar.text_input("Search Name or Support Skill", placeholder="e.g., Alphamon, Tactician, Piercing")
 stages = ["All"] + [s for s in dex["Stage"].dropna().unique().tolist()]
 types = ["All"] + [t for t in dex["Type"].dropna().unique().tolist()]
 attrs = ["All"] + [a for a in dex["Attribute"].dropna().unique().tolist()]
@@ -44,13 +46,35 @@ max_mem = st.sidebar.slider(
 
 filtered = dex[dex["Memory Usage"] <= max_mem].copy()
 if search_q.strip():
-    filtered = filtered[filtered["Name"].str.contains(search_q.strip(), case=False, na=False)]
+    q = search_q.strip()
+    name_match = filtered["Name"].str.contains(q, case=False, na=False)
+    skill_match = (
+        filtered["Support Skill"].str.contains(q, case=False, na=False)
+        if "Support Skill" in filtered.columns
+        else False
+    )
+    filtered = filtered[name_match | skill_match]
 if sel_stage != "All":
     filtered = filtered[filtered["Stage"] == sel_stage]
 if sel_type != "All":
     filtered = filtered[filtered["Type"] == sel_type]
 if sel_attr != "All":
     filtered = filtered[filtered["Attribute"] == sel_attr]
+
+st.sidebar.divider()
+st.sidebar.subheader("Progress Backup (Mobile / Cloud)")
+st.sidebar.download_button(
+    label="Export Progress (JSON)",
+    data=json.dumps(progress, indent=2),
+    file_name="dscsce_progress.json",
+    mime="application/json",
+)
+uploaded = st.sidebar.file_uploader("Import Progress (JSON)", type=["json"])
+if uploaded is not None:
+    imported = json.load(uploaded)
+    progress.update(imported)
+    save_progress(progress)
+    st.sidebar.success("Progress loaded!")
 
 st.subheader(f"Digimon Browser ({len(filtered)} matches)")
 display_cols = [
@@ -61,6 +85,9 @@ display_cols = [
         "Stage",
         "Type",
         "Attribute",
+        "Support Skill",
+        "Type Eff - Str",
+        "Type Eff - Weak",
         "Memory Usage",
         "Equip Slot",
         "HP",
@@ -92,6 +119,24 @@ with col_info:
     st.markdown(f"### #{int(row['Field ID'])} — {row['Name']}")
     st.write(f"**Stage:** {row['Stage']} | **Type:** {row['Type']} | **Attribute:** {row['Attribute']}")
     st.write(f"**Memory Usage:** {row['Memory Usage']} | **Equip Slots:** {row['Equip Slot']}")
+
+    # Support Skill + Description pulled from Support Skills sheet
+    if "Support Skill" in dex.columns and pd.notna(row.get("Support Skill")):
+        skill_name = str(row["Support Skill"]).strip()
+        skill_desc = row.get("Support Skill Description")
+        if pd.notna(skill_desc) and str(skill_desc).strip():
+            st.info(f"**Support Skill — {skill_name}:** {skill_desc}")
+        else:
+            st.info(f"**Support Skill:** {skill_name}")
+
+    # Type Effectiveness (Strong / Weak)
+    eff_str = row.get("Type Eff - Str") if "Type Eff - Str" in dex.columns else None
+    eff_weak = row.get("Type Eff - Weak") if "Type Eff - Weak" in dex.columns else None
+    if pd.notna(eff_str) or pd.notna(eff_weak):
+        e1, e2 = st.columns(2)
+        e1.success(f"**Strong Against:** {eff_str if pd.notna(eff_str) else '—'}")
+        e2.error(f"**Weak Against:** {eff_weak if pd.notna(eff_weak) else '—'}")
+
     if str(row.get("Need To be unlocked in HM", "No")).strip().lower() == "yes":
         st.warning(f"HM Unlock Required: {row.get('How to Unlock') or 'Check story/condition'}")
 
@@ -112,7 +157,7 @@ with col_stats:
 
 evo_col, pre_col = st.columns(2)
 with evo_col:
-    st.markdown("**Digivolves Into (HM Data)**")
+    st.markdown("**Digivolves Into**")
     evos = digi_hm[digi_hm["Base_Clean"] == clean_target][
         ["Target Digivolution", "Stage", "Requirements", "Earliest Level / Notes"]
     ]

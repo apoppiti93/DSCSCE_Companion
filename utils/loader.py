@@ -27,6 +27,22 @@ def clean_name(val: object) -> str:
     return NAME_FIXES.get(s, s)
 
 
+def find_col_fuzzy(
+    df: pd.DataFrame,
+    exact_candidates: list[str],
+    keywords: list[str] | None = None,
+) -> str | None:
+    norm_map = {str(c).strip().lower(): c for c in df.columns}
+    for cand in exact_candidates:
+        if cand.strip().lower() in norm_map:
+            return norm_map[cand.strip().lower()]
+    if keywords:
+        for norm_name, orig_col in norm_map.items():
+            if any(kw in norm_name for kw in keywords):
+                return orig_col
+    return None
+
+
 @st.cache_data(show_spinner="Loading Digimon Cyber Sleuth Complete Edition data...")
 def load_workbook_data(xlsx_path: str | Path = DEFAULT_XLSX) -> dict[str, pd.DataFrame]:
     path = Path(xlsx_path)
@@ -52,7 +68,56 @@ def load_workbook_data(xlsx_path: str | Path = DEFAULT_XLSX) -> dict[str, pd.Dat
         stats[["Clean_Name"] + stats_cols],
         on="Clean_Name",
         how="left",
+        suffixes=("", "_stats"),
     )
+
+    # Fuzzy-match Support Skill & Type Effectiveness columns regardless of exact header wording
+    ss_col = find_col_fuzzy(
+        dex,
+        ["Support Skill", "Support Skills", "Skill", "Passive"],
+        ["support", "skill", "passive"],
+    )
+    str_col = find_col_fuzzy(
+        dex,
+        ["Type Eff - Str", "Type Eff - Strong", "Strong"],
+        ["str", "strong"],
+    )
+    weak_col = find_col_fuzzy(
+        dex,
+        ["Type Eff - Weak", "Weak"],
+        ["weak"],
+    )
+
+    if ss_col and ss_col != "Support Skill":
+        dex = dex.rename(columns={ss_col: "Support Skill"})
+    if str_col and str_col != "Type Eff - Str":
+        dex = dex.rename(columns={str_col: "Type Eff - Str"})
+    if weak_col and weak_col != "Type Eff - Weak":
+        dex = dex.rename(columns={weak_col: "Type Eff - Weak"})
+
+    # Merge Support Skill description from the 'Support Skills' sheet
+    if "Support Skill" in dex.columns and "Support Skills" in data:
+        ss_df = data["Support Skills"].copy()
+        skill_key = find_col_fuzzy(ss_df, ["Skill", "Support Skill", "Name"], ["skill", "name"])
+        desc_key = find_col_fuzzy(ss_df, ["Description", "Effect"], ["desc", "effect"])
+        if skill_key and desc_key:
+            ss_lookup = (
+                ss_df[[skill_key, desc_key]]
+                .dropna(subset=[skill_key])
+                .drop_duplicates(subset=[skill_key])
+                .copy()
+            )
+            ss_lookup["_skill_join"] = ss_lookup[skill_key].astype(str).str.strip().str.lower()
+            dex["_skill_join"] = dex["Support Skill"].fillna("").astype(str).str.strip().str.lower()
+
+            dex = dex.merge(
+                ss_lookup[["_skill_join", desc_key]].rename(
+                    columns={desc_key: "Support Skill Description"}
+                ),
+                on="_skill_join",
+                how="left",
+            ).drop(columns=["_skill_join"])
+
     data["dex"] = dex
 
     # Normalize unified Digivolvution sheet
